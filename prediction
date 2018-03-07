@@ -1,0 +1,95 @@
+# coding=utf8
+# __author__='caichaopeng'
+
+
+import tensorflow as tf
+import inference
+import train
+import os
+from PIL import Image
+import cv2
+import numpy as np
+from PIL import ImageFile
+ImageFile.LOAD_TRUNCATED_IMAGES = True
+
+filename = "./predictFace/frmaes.jpg"
+img_files_path = './predictFace'
+classes = {'0':'蔡超鹏','1': '江恩勇','2':'夏卫海','3':'黄程'}
+TFRecord_file_path = './tfrecords/face_prediction.tfrecords'
+image_size = 299
+predict_num = 1
+output = [1]
+temp = []
+count = 0
+
+
+
+def prediction(img_files_path, classes, TFRecord_file_path, image_size):
+    with tf.Graph().as_default() as g:
+        writer = tf.python_io.TFRecordWriter(TFRecord_file_path)  # 要生成的文件
+        for img_name in os.listdir(img_files_path):
+            img_path = img_files_path + '/' + img_name  # 每一个图片的地址
+            img = Image.open(img_path)
+            img = img.resize((image_size, image_size))
+            img_raw = img.tobytes()  # 将图片转化为二进制格式
+            example = tf.train.Example(features=tf.train.Features(feature={
+                'img_raw':tf.train.Feature(bytes_list=tf.train.BytesList(value=[img_raw])),
+            }))  # example对象对label和image数据进行封装
+            writer.write(example.SerializeToString())  # 序列化为字符串
+        writer.close()
+        filename_queue = tf.train.string_input_producer([TFRecord_file_path])
+        reader = tf.TFRecordReader()
+        _,serialized_example = reader.read_up_to(filename_queue,predict_num)
+        features = tf.parse_example(
+            serialized_example,
+            features={
+                'img_raw': tf.FixedLenFeature([], tf.string),
+            })
+        img = features['img_raw']
+        img = tf.decode_raw(img, tf.uint8)
+        img = tf.cast(img, tf.float32) * (1. / 255) - 0.5
+        img = tf.reshape(img, [predict_num,image_size, image_size, 1])
+
+
+
+
+        y = tf.argmax(inference.inference(img, False, None), 1)
+
+
+
+
+
+
+        # 通过变量重命名的方式来加载模型，这样在前向传播的过程中就不需要调用求滑动平均的函数来获取平局值了。
+        # 这样就可以完全共用mnist_inference.py中定义的前向传播过程
+        variable_averages = tf.train.ExponentialMovingAverage(train.MOVING_AVERAGE_DECAY)
+        variable_to_restore = variable_averages.variables_to_restore()
+        saver = tf.train.Saver(variable_to_restore)
+
+
+        with tf.Session() as sess:
+            coord = tf.train.Coordinator()
+            threads = tf.train.start_queue_runners(sess=sess, coord=coord)
+            # tf.train.get_checkpoint_state函数会通过checkpoint文件自动找到目录中最新模型的文件名
+            ckpt = tf.train.get_checkpoint_state(train.MODEL_SAVE_PATH)
+            if ckpt and ckpt.model_checkpoint_path:
+                # 加载模型
+                saver.restore(sess, ckpt.model_checkpoint_path)
+                temp = (sess.run(y)).tolist()
+                output[0]=classes[str(temp[0])]
+                print(output)
+            else:
+                print("No checkpoint file found")
+                return
+            coord.request_stop()
+            coord.join(threads)
+
+
+
+
+
+if __name__ == '__main__':
+    while True:
+        if  os.path.exists('./predictFace/p.jpg'):
+            prediction(img_files_path, classes, TFRecord_file_path, image_size)
+            os.remove('./predictFace/p.jpg')
